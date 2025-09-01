@@ -1,0 +1,76 @@
+from torchvision import datasets, transforms
+from torch.utils.data import DataLoader, WeightedRandomSampler
+import os, torch
+from collections import Counter
+
+train_dir = os.path.join(path, "AugmentedAlzheimerDataset")  # 또는 OriginalDataset
+
+# 기본 224 입력 (ViT patch16에 맞춤)
+mean = [0.5, 0.5, 0.5]
+std  = [0.5, 0.5, 0.5]
+
+train_tf = transforms.Compose([
+    transforms.Resize((224, 224)),
+    transforms.RandomHorizontalFlip(p=0.5),
+    transforms.RandomRotation(10),
+    transforms.ToTensor(),
+    transforms.Lambda(lambda x: x.expand(3, -1, -1) if x.shape[0]==1 else x),  # 1채널->3채널
+    transforms.Normalize(mean, std),
+])
+
+val_tf = transforms.Compose([
+    transforms.Resize((224, 224)),
+    transforms.ToTensor(),
+    transforms.Lambda(lambda x: x.expand(3, -1, -1) if x.shape[0]==1 else x),
+    transforms.Normalize(mean, std),
+])
+
+# 폴더 구조가 class별 디렉토리 하나면, 일단 전부 train으로 읽고 나중에 split
+full_ds = datasets.ImageFolder(train_dir, transform=train_tf)
+
+# stratified split (간단 구현)
+from sklearn.model_selection import StratifiedShuffleSplit
+y = [full_ds.samples[i][1] for i in range(len(full_ds))]
+sss = StratifiedShuffleSplit(n_splits=1, test_size=0.2, random_state=42)
+train_idx, val_idx = next(sss.split(range(len(full_ds)), y))
+
+from torch.utils.data import Subset
+train_ds = Subset(full_ds, train_idx)
+# val은 변환 다르게 주고 싶으면 target_transform 대신 아래처럼 포장
+full_ds_val = datasets.ImageFolder(train_dir, transform=val_tf)
+val_ds = Subset(full_ds_val, val_idx)
+
+# 클래스 불균형 → WeightedRandomSampler 권장
+train_targets = [full_ds.samples[i][1] for i in train_idx]
+class_counts = Counter(train_targets)
+num_classes = len(full_ds.classes)
+class_weights = torch.tensor([1.0/class_counts[c] for c in range(num_classes)], dtype=torch.float)
+sample_weights = torch.tensor([class_weights[t] for t in train_targets], dtype=torch.float)
+sampler = WeightedRandomSampler(sample_weights, num_samples=len(sample_weights), replacement=True)
+
+BATCH = 32
+train_loader = DataLoader(train_ds, batch_size=BATCH, sampler=sampler, num_workers=2, pin_memory=True)
+val_loader   = DataLoader(val_ds, batch_size=BATCH, shuffle=False, num_workers=2, pin_memory=True)
+
+print("classes:", full_ds.classes)
+
+
+채널: x.expand(3, -1, -1)로 1→3채널 변환. 만약 컬러인 경우 그대로 통과.
+
+불균형: WeightedRandomSampler로 미니배치 클래스 편향 줄임.
+
+입력 크기: ViT-B/16은 224 권장.
+
+
+!pip install timm -q
+
+import timm, torch.nn as nn, torch
+
+num_classes = 4
+model = timm.create_model('vit_base_patch16_224', pretrained=True)
+# 출력 헤드 교체
+model.head = nn.Linear(model.head.in_features, num_classes)
+
+device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+model = model.to(device)
+
