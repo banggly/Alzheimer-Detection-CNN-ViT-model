@@ -1,0 +1,75 @@
+<Transformer processing>
+
+1. X input을 패치로 나누어 flatten 시킴
+
+```jsx
+1️⃣ (8, 196, 768)까지의 의미
+8 → batch size (한 번에 이미지 8장 처리)
+
+196 → 각 이미지를 14×14 패치로 나눈 개수
+
+768 → 패치 하나를 flatten + projection한 임베딩 차원 수
+
+즉, 여기까지는
+
+"이미지 8장 → 각 이미지를 196개의 패치로 분할 → 각 패치를 768차원 벡터로 변환"
+이 상태라는 거죠.
+```
+
+1. cls token 추가
+2️⃣ [CLS] token 추가 과정
+Transformer는 문장 앞에 특별 토큰을 붙이는 BERT 방식에서 아이디어를 가져왔습니다.
+
+[CLS] token은 전체 이미지의 대표 요약 정보를 학습하도록 하는 토큰
+
+최종 classification은 이 토큰의 최종 벡터로 진행
+
+구체 과정
+
+cls_token 파라미터를 (1, 1, 768)로 생성
+
+1장의 이미지, 1개의 토큰, 768차원
+
+모델 학습 가능한 파라미터
+
+einops.repeat로 (8, 1, 768)로 확장
+
+batch size 8에 맞춰 복제
+
+torch.cat으로 (8, 196, 768) 앞에 (8, 1, 768)을 붙임
+
+결과: (8, 197, 768)
+
+이제 각 이미지마다 1개의 cls 토큰 + 196개의 패치 토큰이 존재하게 된 겁니다.
+
+  1. position encoding 적용
+
+```jsx
+3️⃣ Position Encoding 적용
+Transformer는 순서 정보가 없으니 위치 인코딩을 더해줘야 합니다.
+
+cls_token까지 포함했으니 sequence 길이는 197
+
+Position Encoding shape: (197, 768)
+
+197개의 토큰 각각의 위치를 표현하는 벡터
+
+이걸 모든 batch에 더해줌 → 브로드캐스팅((8, 197, 768)에 자동으로 맞춰짐)
+
+결과:
+
+입력 (8, 197, 768) + Position Encoding (197, 768) → (8, 197, 768)
+모든 배치에 같은 위치 정보가 적용됨.
+```
+
+1. 최종 process
+
+```jsx
+이미지 → 패치 분할+flatten → (8, 196, 768)
+    ↓ cls_token 생성 및 batch에 맞춰 확장
+concat → (8, 197, 768)
+    ↓ position encoding (197, 768) 더하기
+Transformer Encoder 입력 준비 완료
+
+```
+
